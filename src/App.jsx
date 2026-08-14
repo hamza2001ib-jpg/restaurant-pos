@@ -244,7 +244,20 @@ export default function App() {
       setShowSplit(false);
       setSplitTarget("");
       setSplitSelection({});
+        } else if (action === "reactivate") {
+      const h = payload;
+      const items = h.items.map((it) => ({
+        number: it.number,
+        qty: it.qty,
+        note: it.note || "",
+        course: it.course || "",
+      }));
+      await saveTable(h.tableNumber, items, "offen");
+      setHistoryDetail(null);
+      setActiveTable(h.tableNumber);
+      setView("table");
     } else if (action === "delete-article") {
+
       await supabase.from("articles").delete().eq("number", payload);
       await fetchArticles();
     } else if (action === "close-day") {
@@ -833,9 +846,17 @@ export default function App() {
             {historyDetail.cashGiven != null && (
               <div className="flex items-center justify-between text-sm mb-1"><span className="text-slate-500">Erhalten</span><span className="lcd">{money(historyDetail.cashGiven)}</span></div>
             )}
-            <div className="flex items-center justify-between text-base font-semibold mt-2 pt-2 border-t border-blue-100"><span>Gesamt</span><span className="lcd text-blue-600">{money(historyDetail.total)}</span></div>
+                        <div className="flex items-center justify-between text-base font-semibold mt-2 pt-2 border-t border-blue-100"><span>Gesamt</span><span className="lcd text-blue-600">{money(historyDetail.total)}</span></div>
+            <button
+              onClick={() => requestPin("reactivate", historyDetail)}
+              className="w-full h-11 rounded-lg bg-blue-600 text-white font-semibold mt-3"
+            >
+              Tisch reaktivieren
+            </button>
           </div>
         </div>
+      )}
+>
       )}
 
       {payModal && table && (
