@@ -17,6 +17,16 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [closings, setClosings] = useState([]);
   const [pin, setPin] = useState("1234");
+  const [appPin, setAppPin] = useState("0000");
+  const [appUnlocked, setAppUnlocked] = useState(false);
+  const [appPinInput, setAppPinInput] = useState("");
+  const [appPinError, setAppPinError] = useState("");
+  const [appPinChangeStep, setAppPinChangeStep] = useState(false);
+  const [newAppPin, setNewAppPin] = useState("");
+
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [quickBuffer, setQuickBuffer] = useState("");
+  const [quickError, setQuickError] = useState("");
 
   const [view, setView] = useState("dashboard");
   const [activeTable, setActiveTable] = useState(null);
@@ -70,6 +80,11 @@ export default function App() {
     const { data } = await supabase.from("settings").select("*").eq("key", "pin").single();
     if (data) setPin(data.value);
   }
+  async function fetchAppPin() {
+    const { data } = await supabase.from("settings").select("*").eq("key", "app_pin").single();
+    if (data) setAppPin(data.value);
+    else await supabase.from("settings").upsert({ key: "app_pin", value: "0000" });
+  }
   async function fetchHistory() {
     const { data } = await supabase
       .from("history")
@@ -86,6 +101,7 @@ export default function App() {
         cashGiven: h.cash_given,
         dateLabel: h.date_label,
         timeLabel: h.time_label,
+        createdAt: h.created_at,
       }))
     );
   }
@@ -95,6 +111,7 @@ export default function App() {
       (data || []).map((c) => ({
         dateLabel: c.date_label,
         closedAtLabel: c.closed_at_label,
+        closedAt: c.closed_at,
         receiptCount: c.receipt_count,
         totalRevenue: c.total_revenue,
       }))
@@ -103,8 +120,11 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      await Promise.all([fetchCategories(), fetchArticles(), fetchOpenTables(), fetchPin(), fetchHistory(), fetchClosings()]);
+      await Promise.all([fetchCategories(), fetchArticles(), fetchOpenTables(), fetchPin(), fetchAppPin(), fetchHistory(), fetchClosings()]);
       setReady(true);
+      const savedDate = localStorage.getItem("pos_unlock_date");
+      const today = new Date().toLocaleDateString("de-DE");
+      if (savedDate === today) setAppUnlocked(true);
     })();
 
     const channel = supabase
@@ -188,6 +208,70 @@ export default function App() {
     await saveTable(activeTable, items, "offen");
   }
 
+  function confirmAppPin() {
+    if (appPinInput !== appPin) {
+      setAppPinError("Falscher Code");
+      return;
+    }
+    localStorage.setItem("pos_unlock_date", new Date().toLocaleDateString("de-DE"));
+    setAppUnlocked(true);
+    setAppPinInput("");
+    setAppPinError("");
+  }
+
+  async function saveAppPin() {
+    if (newAppPin.length < 4) return;
+    await supabase.from("settings").upsert({ key: "app_pin", value: newAppPin });
+    setAppPin(newAppPin);
+    setNewAppPin("");
+    setAppPinChangeStep(false);
+  }
+
+  async function removeItem(idx) {
+    const items = table.items.filter((_, ix) => ix !== idx);
+    await saveTable(activeTable, items, "offen");
+  }
+
+  async function quickAddByNumber() {
+    const art = articles.find((a) => a.number === quickBuffer);
+    if (!art) {
+      setQuickError("Nicht gefunden");
+      return;
+    }
+    const items = [...(table?.items || [])];
+    const idx = items.findIndex((i) => i.number === art.number && !i.note && !i.course);
+    if (idx >= 0) items[idx] = { ...items[idx], qty: items[idx].qty + 1 };
+    else items.push({ number: art.number, qty: 1, note: "", course: "" });
+    await saveTable(activeTable, items, "offen");
+    setQuickBuffer("");
+    setQuickError("");
+  }
+
+  async function doSplit(payload) {
+    const targetKey = String(Number(payload));
+    const source = table;
+    const remaining = [];
+    const moved = [];
+    source.items.forEach((it, ix) => {
+      const moveQty = splitSelection[ix] || 0;
+      const stayQty = it.qty - moveQty;
+      if (stayQty > 0) remaining.push({ ...it, qty: stayQty });
+      if (moveQty > 0) moved.push({ ...it, qty: moveQty });
+    });
+    const target = tables[targetKey] || { items: [] };
+    const items = [...target.items];
+    moved.forEach((mi) => {
+      const idx = items.findIndex((i) => i.number === mi.number && !i.note && !i.course && !mi.note && !mi.course);
+      if (idx >= 0) items[idx] = { ...items[idx], qty: items[idx].qty + mi.qty };
+      else items.push({ ...mi });
+    });
+    await saveTable(activeTable, remaining, "offen");
+    await saveTable(targetKey, items, "offen");
+    setShowSplit(false);
+    setSplitTarget("");
+    setSplitSelection({});
+  }
+
   function requestPin(action, payload) {
     setPinInput("");
     setPinError("");
@@ -244,7 +328,7 @@ export default function App() {
       setShowSplit(false);
       setSplitTarget("");
       setSplitSelection({});
-        } else if (action === "reactivate") {
+    } else if (action === "reactivate") {
       const h = payload;
       const items = h.items.map((it) => ({
         number: it.number,
@@ -257,7 +341,6 @@ export default function App() {
       setActiveTable(h.tableNumber);
       setView("table");
     } else if (action === "delete-article") {
-
       await supabase.from("articles").delete().eq("number", payload);
       await fetchArticles();
     } else if (action === "close-day") {
@@ -344,10 +427,12 @@ export default function App() {
   const uncategorized = articles.filter((a) => !categories.some((c) => c.number === a.categoryNumber));
 
   const todayLabel = new Date().toLocaleDateString("de-DE");
-  const todayHistory = history.filter((h) => h.dateLabel === todayLabel);
+  const todayClosing = closings.find((c) => c.dateLabel === todayLabel);
+  const todayHistory = history.filter(
+    (h) => h.dateLabel === todayLabel && (!todayClosing || new Date(h.createdAt).getTime() > new Date(todayClosing.closedAt).getTime())
+  );
   const todayRevenue = todayHistory.reduce((sum, h) => sum + h.total, 0);
   const filteredHistory = historySearch ? history.filter((h) => h.tableNumber === historySearch.trim()) : history;
-  const todayClosing = closings.find((c) => c.dateLabel === todayLabel);
   const revenueByCategory = categories
     .map((cat) => {
       const sum = todayHistory.reduce((s, h) => {
@@ -380,6 +465,29 @@ export default function App() {
 
   if (!ready) {
     return <div className="min-h-screen bg-blue-50 text-slate-500 flex items-center justify-center">Lädt…</div>;
+  }
+
+  if (!appUnlocked) {
+    return (
+      <div className="min-h-screen bg-blue-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-xl p-6 w-full max-w-xs border border-blue-100">
+          <div className="text-center mb-4">
+            <Lock size={28} className="mx-auto text-blue-600 mb-2" />
+            <div className="text-sm text-slate-600">Zugangscode eingeben</div>
+          </div>
+          <input
+            type="password"
+            inputMode="numeric"
+            value={appPinInput}
+            onChange={(e) => setAppPinInput(e.target.value.replace(/\D/g, ""))}
+            className="w-full h-12 rounded-lg bg-blue-50 border border-blue-200 px-3 text-center lcd text-2xl mb-2"
+            autoFocus
+          />
+          {appPinError && <div className="text-red-600 text-xs text-center mb-2">{appPinError}</div>}
+          <button onClick={confirmAppPin} className="w-full h-12 rounded-lg bg-blue-600 text-white font-semibold">Öffnen</button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -585,7 +693,7 @@ export default function App() {
                       <Plus size={14} />
                     </button>
                     <button
-                      onClick={() => requestPin("void-item", idx)}
+                      onClick={() => removeItem(idx)}
                       className="w-8 h-8 rounded-full bg-red-50 text-red-600 flex items-center justify-center"
                       title="Sofort-Storno für diese Position"
                     >
@@ -629,6 +737,13 @@ export default function App() {
               )}
             </div>
           </div>
+
+          <button
+            onClick={() => { setShowQuickAdd(true); setQuickBuffer(""); setQuickError(""); }}
+            className="w-full h-12 rounded-lg bg-yellow-400 text-slate-900 font-semibold mb-3"
+          >
+            🔢 Schnelleingabe (Nummer)
+          </button>
 
           <div className="grid grid-cols-2 gap-2 mb-4">
             <button
@@ -737,6 +852,18 @@ export default function App() {
               </div>
             )}
           </div>
+
+          <div className="bg-white rounded-xl p-4 border border-blue-100 mt-4">
+            <div className="text-sm text-slate-500 mb-2">Täglichen Zugangscode ändern</div>
+            {!appPinChangeStep ? (
+              <button onClick={() => setAppPinChangeStep(true)} className="text-blue-600 text-sm">Code ändern</button>
+            ) : (
+              <div className="space-y-2">
+                <input placeholder="Neuer Code" value={newAppPin} onChange={(e) => setNewAppPin(e.target.value.replace(/\D/g, ""))} className="w-full h-11 rounded-lg bg-blue-50 border border-blue-200 px-3 text-sm lcd" />
+                <button onClick={saveAppPin} className="w-full h-11 rounded-lg bg-blue-600 text-white font-semibold">Speichern</button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -796,7 +923,32 @@ export default function App() {
             </div>
             <div className="text-xs text-slate-400 mb-1">Ziel-Tischnummer (neu oder bestehend)</div>
             <input value={splitTarget} onChange={(e) => setSplitTarget(e.target.value.replace(/\D/g, ""))} className="w-full h-11 rounded-lg bg-blue-50 border border-blue-200 text-center lcd text-lg mb-3" placeholder="z. B. 12" />
-            <button onClick={() => splitTarget && requestPin("split", splitTarget)} disabled={!splitTarget || Object.values(splitSelection).every((v) => !v)} className="w-full h-11 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-30">Abtrennen (PIN)</button>
+            <button onClick={() => splitTarget && doSplit(splitTarget)} disabled={!splitTarget || Object.values(splitSelection).every((v) => !v)} className="w-full h-11 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-30">Abtrennen</button>
+          </div>
+        </div>
+      )}
+
+      {showQuickAdd && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-5 w-full max-w-xs border border-blue-100">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm text-slate-600">Artikelnummer eingeben</div>
+              <button onClick={() => setShowQuickAdd(false)}><X size={16} className="text-slate-400" /></button>
+            </div>
+            <div className="text-3xl lcd text-center text-blue-600 mb-3 h-10">{quickBuffer || "—"}</div>
+            {quickError && <div className="text-red-600 text-xs text-center mb-2">{quickError}</div>}
+            <Keypad
+              onDigit={(d) => { setQuickBuffer((b) => (b + d).slice(0, 4)); setQuickError(""); }}
+              onClear={() => setQuickBuffer("")}
+              onBackspace={() => setQuickBuffer((b) => b.slice(0, -1))}
+            />
+            <button
+              onClick={quickAddByNumber}
+              disabled={!quickBuffer}
+              className="mt-3 w-full h-12 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-30"
+            >
+              OK — Hinzufügen
+            </button>
           </div>
         </div>
       )}
@@ -846,7 +998,7 @@ export default function App() {
             {historyDetail.cashGiven != null && (
               <div className="flex items-center justify-between text-sm mb-1"><span className="text-slate-500">Erhalten</span><span className="lcd">{money(historyDetail.cashGiven)}</span></div>
             )}
-                        <div className="flex items-center justify-between text-base font-semibold mt-2 pt-2 border-t border-blue-100"><span>Gesamt</span><span className="lcd text-blue-600">{money(historyDetail.total)}</span></div>
+            <div className="flex items-center justify-between text-base font-semibold mt-2 pt-2 border-t border-blue-100"><span>Gesamt</span><span className="lcd text-blue-600">{money(historyDetail.total)}</span></div>
             <button
               onClick={() => requestPin("reactivate", historyDetail)}
               className="w-full h-11 rounded-lg bg-blue-600 text-white font-semibold mt-3"
@@ -855,8 +1007,6 @@ export default function App() {
             </button>
           </div>
         </div>
-      )}
->
       )}
 
       {payModal && table && (
