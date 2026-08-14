@@ -258,6 +258,8 @@ export default function App() {
         total_revenue: dayHistory.reduce((s, h) => s + h.total, 0),
       });
       await fetchClosings();
+    } else if (action === "open-admin") {
+      setView("admin");
     }
     setPinPrompt(null);
   }
@@ -326,6 +328,7 @@ export default function App() {
     ...cat,
     items: articles.filter((a) => a.categoryNumber === cat.number),
   }));
+  const uncategorized = articles.filter((a) => !categories.some((c) => c.number === a.categoryNumber));
 
   const todayLabel = new Date().toLocaleDateString("de-DE");
   const todayHistory = history.filter((h) => h.dateLabel === todayLabel);
@@ -382,13 +385,13 @@ export default function App() {
               <button onClick={() => setView("history")} className="p-2 rounded-lg bg-blue-500 text-white">
                 <History size={20} />
               </button>
-              <button onClick={() => setView("admin")} className="p-2 rounded-lg bg-blue-500 text-white">
+              <button onClick={() => requestPin("open-admin", null)} className="p-2 rounded-lg bg-blue-500 text-white">
                 <Settings size={20} />
               </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 mb-5">
+          <div className="grid grid-cols-2 gap-2 mb-5">
             <div className="bg-white rounded-xl p-3 border border-blue-100">
               <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Offene Tische</div>
               <div className="text-2xl lcd text-blue-600">{openTableNumbers.length}</div>
@@ -396,10 +399,6 @@ export default function App() {
             <div className="bg-white rounded-xl p-3 border border-blue-100">
               <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Rechnungen heute</div>
               <div className="text-2xl lcd text-blue-600">{todayHistory.length}</div>
-            </div>
-            <div className="bg-white rounded-xl p-3 border border-blue-100">
-              <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Umsatz heute</div>
-              <div className="text-lg lcd text-blue-600">{money(todayRevenue)}</div>
             </div>
           </div>
 
